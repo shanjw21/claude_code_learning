@@ -1,0 +1,16 @@
+# Secrets
+.env
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+
+# Session data
+sessions_store/
+
+# Python
+__pycache__/
+*.pyc
