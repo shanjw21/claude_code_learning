@@ -202,6 +202,7 @@ class TodoManager:
         """
         if len(items) > 20:
             raise ValueError("plan items beyond 20, failed")
+        # 进行中的item数量，有效的item
         in_progress_value, validated_items = 0, []
         for item in items:
             if item["status"] not in ["pending", "in_progress", "completed"]:
