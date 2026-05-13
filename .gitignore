@@ -14,3 +14,5 @@ sessions_store/
 # Python
 __pycache__/
 *.pyc
+
+.claude

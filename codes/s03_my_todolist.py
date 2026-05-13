@@ -457,10 +457,10 @@ def main():
 
             while True:
                 response = client.messages.create(
-                        model=model_name,
-                        max_tokens=4096,
-                        messages=messages,
-                        tools=TOOLS
+                    model=model_name,
+                    max_tokens=4096,
+                    messages=messages,
+                    tools=TOOLS
                 )
                 # save + append assistant response
                 messages.append({"role": "assistant", "content": response.content})
@@ -475,7 +475,7 @@ def main():
                         print(f"\n[Tool: {block.name}]")
                         print(f"\nInput: {block.input}\n")
                         tool_use_result = process_tool_call(tool_name=block.name, tool_input=block.input)
-                        print(f"  Result: {tool_use_result[:200]}")
+                        print(f"Result: {tool_use_result[:200]}")
                         # add tool result message
                         results.append(
                             {
