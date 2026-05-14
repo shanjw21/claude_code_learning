@@ -1,199 +1,223 @@
-# S05: Skills -- "On-demand capability loading"
+# S05: Skills -- "按需加载技能"
 
 ---
 
-## 1. What Problem Does This Solve?
+## 1. 要解决什么问题？
 
-Your agent has a fixed set of tools. But sometimes it needs specialized knowledge --
-how to review a PR, how to write a commit message, how to debug a specific framework.
+你的 Agent 已经有了固定的工具集（bash、read_file、write_file、todo、task）。但有时候它需要**特定领域的知识**：
 
-**Skills are markdown files the agent loads on demand.** When loaded, the skill content
-is injected into the conversation as context the model can follow.
+- 怎么写一个符合项目规范的 commit message？
+- 怎么做 code review？
+- 怎么排查某个框架的 bug？
 
----
+这些知识**不应该写死在系统 prompt 里**——那会浪费大量 token，而且大部分时间用不上。
 
-## 2. Mental Model
+**Skills 的解法：按需加载 markdown。** 当 Agent 需要某个技能时，调用 `load_skill` 工具读取对应的 `SKILL.md` 文件，内容作为上下文注入到对话中。
 
 ```
 skills/
-  SKILL.md          <-- agent loads this when needed
-  +------------------+
-  | ---              |
-  | name: commit     |  <-- YAML frontmatter (metadata)
-  | description: ... |
-  | ---              |
-  | # How to commit  |  <-- Markdown body (instructions)
-  | 1. Check diff    |
-  | 2. Write message |
-  +------------------+
+  commit/SKILL.md       ← commit message 规范
+  code-review/SKILL.md  ← code review 流程
+  debug/SKILL.md        ← 调试指南
 
-When model calls load_skill("commit"):
-  -> SkillLoader reads SKILL.md
-  -> Parses YAML frontmatter
-  -> Returns body text as tool_result
-  -> Model now has the instructions in context
+Agent 调用 load_skill("commit") → 读取文件 → 返回内容给 LLM → LLM 按指示操作
 ```
 
 ---
 
-## 3. Key Concepts
+## 2. 心智模型
 
-### 3.1 YAML Frontmatter
+### 文件结构
 
-A SKILL.md file has two parts separated by `---`:
+一个 `SKILL.md` 文件由两部分组成，用 `---` 分隔：
 
 ```markdown
 ---
-name: commit-review
-description: Review code changes
-trigger: review, PR
+name: commit
+description: 生成符合项目规范的 commit message
+trigger: commit, message, 提交
 ---
-# Commit Review Skill
-1. Read the diff
-2. Check for common mistakes
-3. Write a summary
+# Commit Message 规范
+
+## 格式
+<type>(<scope>): <subject>
+
+## type 可选值
+- feat: 新功能
+- fix: 修复 bug
+- refactor: 重构
+- docs: 文档更新
+- style: 格式调整
+- test: 测试相关
+
+## 示例
+feat(todo): add batch delete functionality
+fix(session): handle missing session key gracefully
 ```
 
-The YAML block is metadata (for filtering, discovery). The body is the actual
-instruction the model follows.
+- **YAML frontmatter**（`---` 之间的部分）：元数据，用于发现、过滤、触发词匹配
+- **Body**（第二个 `---` 之后的部分）：实际指令，LLM 读取后遵循
 
-### 3.2 Regex Parsing
-
-You need to split the file at the `---` boundaries. The pattern is:
+### 数据流
 
 ```
-^---\n(.*?)\n---\n(.*)    (with re.DOTALL so . matches newlines)
+启动时:
+  SkillLoader.__init__(skills_dir/)
+    → 递归扫描所有 SKILL.md
+    → 解析 YAML frontmatter → 提取 name/description
+    → 构建 skills = {"commit": {meta: {...}, body: "..."}, ...}
+
+运行时:
+  User: "帮我写个 commit message"
+    → LLM 查看可用技能 → 调用 load_skill("commit")
+      → SkillLoader.load("commit") 返回 body 文本
+        → LLM 读到具体规范 → 按格式生成 commit message
 ```
-
-Group 1 = YAML text, Group 2 = body text.
-
-### 3.3 Skill Discovery
-
-The `SkillLoader` scans the skills directory at startup and builds an index.
-When the model asks to load a skill, it's a simple dictionary lookup.
-
-The system prompt should include available skill names so the model knows what exists.
 
 ---
 
-## 4. Skeleton Code
+## 3. 核心概念
 
-### 4.1 SkillLoader Class
+### 3.1 启动时扫描 vs 按需读取
+
+**启动时扫描：** 启动时扫描整个 `skills/` 目录，建立 `skills` 索引（只读 metadata）。
+
+**按需读取 Body：** 真正的 body 内容在启动时就已经读入内存了（因为文件通常很小）。如果技能文件很大（几十 KB），可以改为只在 `load()` 时才读取文件内容。
+
+**思考：** 为什么要在启动时扫描？不能等到 LLM 第一次调用 `load_skill` 时再扫描吗？
+
+> 如果按需扫描，系统 prompt 里就无法列出可用技能，LLM 就不知道该调用什么。
+
+### 3.2 YAML Frontmatter 解析
+
+Python 标准库没有内置 YAML 解析器（`yaml` 需要 `pip install PyYAML`）。我们选择**手动解析**：
 
 ```python
-import re
-
-class SkillLoader:
-    def __init__(self, skills_dir: Path):
-        self.skills = {}
-        # TODO: Scan skills_dir for SKILL.md files
-        if skills_dir.exists():
-            for f in sorted(skills_dir.rglob("SKILL.md")):
-                text = f.read_text()
-                # TODO: Use regex to split YAML frontmatter from body
-                # Pattern: ^---\n(.*?)\n---\n(.*)
-                # Hint: use re.match() with re.DOTALL
-                match = re.match(r"___", text, re.DOTALL)
-                meta, body = {}, text
-                if match:
-                    # TODO: Parse YAML lines into meta dict
-                    # Each line like "name: commit-review" -> {"name": "commit-review"}
-                    for line in match.group(1).strip().splitlines():
-                        if ":" in line:
-                            k, v = line.split(":", 1)
-                            meta[k.strip()] = v.strip()
-                    body = match.group(2).strip()
-
-                name = meta.get("name", f.parent.name)
-                self.skills[name] = {"meta": meta, "body": body}
-
-    def descriptions(self) -> str:
-        """Return a summary of available skills for the system prompt."""
-        if not self.skills:
-            return "(no skills)"
-        # TODO: Build a string like " - commit: Review code changes"
-        # Hint: use meta.get('description', '-') for each skill
-        pass
-
-    def load(self, name: str) -> str:
-        """Load a skill by name. Return body text or error."""
-        s = self.skills.get(name)
-        if not s:
-            available = ", ".join(self.skills.keys())
-            return f"Error: Unknown skill '{name}'. Available: {available}"
-        # TODO: Return the body text
+# 每行都是 "key: value" 格式
+for line in yaml_text.splitlines():
+    if ":" in line:
+        k, v = line.split(":", 1)
+        meta[k.strip()] = v.strip()
 ```
 
-### 4.2 Tool Definition
+这足够处理简单的键值对。如果 skill 需要数组或多行字符串，可以用 PyYAML，但对于 learn-claude-code 的目标来说，手动解析足够了。
 
-```python
-{
-    "name": "load_skill",
-    "description": "___",
-    "input_schema": {
-        "type": "object",
-        "properties": {
-            "name": {"type": "string"}
-        },
-        "required": ["name"]
-    }
-}
+### 3.3 系统 Prompt 中的技能发现
+
+启动时，`SkillLoader.descriptions()` 生成一个简短的技能列表，放入系统 prompt：
+
+```
+Available skills:
+- commit: 生成符合项目规范的 commit message
+- code-review: 代码审查流程
+Use load_skill to get detailed instructions.
 ```
 
-### 4.3 Dispatch and System Prompt
+这样 LLM 知道有哪些技能可用，但**不需要占用大量 token 来加载具体内容**。
 
-```python
-SKILLS = SkillLoader(SKILLS_DIR)  # SKILLS_DIR = WORKDIR / "skills"
+---
 
-TOOL_HANDLERS = {
-    # ... existing tools ...
-    "load_skill": lambda **kw: SKILLS.load(kw["name"]),
-}
+## 4. 架构图
 
-# The system prompt should tell the model what skills are available
-SYSTEM = f"""You are a coding agent at {WORKDIR}.
-Skills available: {SKILLS.descriptions()}
-Use load_skill to get specialized instructions."""
+```
+                    启动时
+                       |
+                       v
+              +--------------------+
+              | SkillLoader()      |
+              |                    |
+              | for SKILL.md:     |
+              |   parse frontmatter|
+              |   build index:    |
+              |   {name: {meta,body}}|
+              +--------+-----------+
+                       |
+                       v
+              系统 Prompt: "Available skills: - commit: xxx"
+
+                    运行时
+                       |
+                    LLM 调用 load_skill
+                       |
+                       v
+              +--------------------+
+              | SKILLS.load(name)  |
+              |   → lookup by name |
+              |   → return body    |
+              +--------+-----------+
+                       |
+                       v
+              Body text 作为 tool_result 返回给 LLM
+              LLM 获得具体指令，继续执行
 ```
 
 ---
 
-## 5. Thought Exercises
+## 5. 你需要实现的部分
 
-1. **Why scan at startup instead of on demand?**
-   What's the tradeoff?
+`s05_skills.py` 基于 s04 的代码，新增 2 个 TODO 区域：
 
-2. **What if a skill file has malformed YAML?**
-   Should the whole thing fail, or fall back gracefully?
+### TODO 1: SkillLoader 类
 
-3. **Should skills be able to define NEW tools?**
-   Or are they just instruction text? What are the limits?
+需要实现：
+1. `__init__()`：扫描 `skills_dir` 下所有 `SKILL.md`，用正则解析 YAML frontmatter，构建 `self.skills` 字典
+2. `descriptions()`：返回可用技能的列表，用于系统 prompt
+3. `load(name)`：按名字查找并返回 body 文本，找不到时返回错误信息
 
----
+### TODO 2: load_skill 工具
 
-## 6. Implementation Checklist
-
-- [ ] `SkillLoader.__init__()` scans for SKILL.md files
-- [ ] YAML frontmatter parsing with regex
-- [ ] `SkillLoader.descriptions()` returns summary for system prompt
-- [ ] `SkillLoader.load()` returns body text or error
-- [ ] Create a `skills/` directory with at least one sample SKILL.md
-- [ ] `load_skill` tool added to `TOOLS` and `TOOL_HANDLERS`
-- [ ] System prompt includes skill descriptions
-- [ ] Test: ask agent to load a skill and follow its instructions
+1. 在 `TOOLS` 中添加 `load_skill` 工具定义
+2. 在 `TOOL_DICT` 中注册 handler
+3. 更新 `SYSTEM_PROMPT`，加入技能列表
 
 ---
 
-## 7. Key Insight
+## 6. 思考题
 
-> "Skills are just markdown the model reads on demand."
+1. **为什么启动时扫描而不是按需读取？** 权衡是什么？
 
-No special infrastructure. Just file reading + regex parsing + returning text
-as a tool result. The model treats skill content the same as any other context.
+2. **如果某个 SKILL.md 的 YAML 格式错误怎么办？** 应该让整个程序崩溃，还是跳过这个文件？
 
-This is the "harness philosophy" in miniature: you don't build intelligence,
-you build the environment that lets the model be intelligent.
+3. **技能应该能定义新的工具吗？** 还是只是纯文本指令？各自的限制是什么？
+
+4. **如果技能文件很大（100KB），全部加载到上下文会怎样？** 有什么优化策略？
+
+5. **设计题：** 你想给 Agent 加一个"自动发现触发技能"的能力（比如看到代码变更自动加载 code-review skill），怎么实现？
 
 ---
 
-*Implement `s05_skills.py`. Paste your code and say "Review my s05 code."*
+## 7. 实现清单
+
+- [ ] `SkillLoader.__init__()` 扫描 SKILL.md 文件
+- [ ] YAML frontmatter 正则解析
+- [ ] `SkillLoader.descriptions()` 返回技能摘要
+- [ ] `SkillLoader.load()` 返回 body 或错误
+- [ ] 创建 `skills/` 目录，至少放一个示例 SKILL.md
+- [ ] `load_skill` 工具添加到 `TOOLS` 和 `TOOL_DICT`
+- [ ] 系统 prompt 包含技能列表
+- [ ] 测试：让 Agent 加载一个技能并按指示操作
+
+---
+
+## 8. 调试指南
+
+| 症状 | 检查 |
+|------|------|
+| Agent 说"没有可用技能" | 技能目录路径对吗？SKILL.md 文件名正确吗？ |
+| 技能加载后 LLM 没反应 | body 内容是否为空？系统 prompt 里技能描述够清晰吗？ |
+| YAML 解析出错 | 检查 `---` 分隔符是否正确（前后各一行空行） |
+| 系统 prompt 里技能列表为空 | `descriptions()` 方法返回了什么？ |
+
+---
+
+## 9. 核心洞察
+
+> **"Skills 就是 LLM 按需阅读的 markdown 文件。"**
+
+没有特殊基础设施。就是：文件读取 + 正则解析 + 返回文本作为工具结果。LLM 把技能内容当成普通上下文来处理。
+
+这就是 "harness 哲学" 的微观体现：你不构建智能，你构建让模型展现智能的环境。
+
+---
+
+*在 `codes/s05_skills.py` 中实现 TODO 部分。完成后粘贴代码并说 "Review my s05 code."*
