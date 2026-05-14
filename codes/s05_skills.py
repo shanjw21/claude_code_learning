@@ -122,23 +122,15 @@ TOOLS = [
             "required": ["prompt"]
         }
     },
-    # TODO: Add "load_skill" tool definition
-    # Hint: It should accept a single required parameter: "name" (string)
+    # TODO 1: 添加 load_skill 工具定义
+    # 参考讲义 5.2 节，接受一个 name 参数
     {
-        "name": "load_skill",
-        "description": "___DESCRIBE_WHAT_THIS_TOOL_DOES___",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "name": {"type": "string", "description": "___THE_SKILL_NAME___"}
-            },
-            "required": ["___WHAT_IS_REQUIRED___"]
-        }
+        "name":"load_skill",
+        "description":""
     }
 ]
 
 TOOLS_BY_NAME = {t["name"]: t for t in TOOLS}
-
 EXPLORE_TOOLS = [TOOLS_BY_NAME["bash"], TOOLS_BY_NAME["read_file"]]
 GENERAL_TOOLS = [
     TOOLS_BY_NAME["bash"], TOOLS_BY_NAME["read_file"],
@@ -152,8 +144,7 @@ GENERAL_TOOLS = [
 def tool_bash(command: str, timeout: int = 30) -> str:
     try:
         result = subprocess.run(command, shell=True, capture_output=True, timeout=timeout, text=True)
-        output = result.stdout or result.stderr
-        return output or "(command produced no output)"
+        return result.stdout or result.stderr or "(no output)"
     except subprocess.TimeoutExpired:
         return f"Error: Command timed out after {timeout} seconds"
     except Exception as e:
@@ -252,7 +243,6 @@ class SessionStore:
     def __init__(self, session_dir: str):
         self.session_dir = Path(session_dir)
         self.session_dir.mkdir(parents=True, exist_ok=True)
-
     def _get_session_path(self, session_key: str) -> Path:
         return self.session_dir / f"{hashlib.md5(session_key.encode()).hexdigest()}.jsonl"
 
@@ -372,62 +362,18 @@ def run_subagent(prompt: str, agent_type: str = "explore") -> str:
 # ============================================================================
 
 class SkillLoader:
-    """Scans a directory for SKILL.md files and loads them on demand."""
-
     def __init__(self, skills_dir: Path):
-        self.skills_dir = skills_dir
-        self.skills = {}  # name -> {"meta": {...}, "body": "..."}
-
-        if not skills_dir.exists():
-            print(f"[Skills directory not found: {skills_dir}]")
-            return
-
-        # TODO: Scan skills_dir recursively for SKILL.md files
-        # Hint: use skills_dir.rglob("SKILL.md") to find all skill files
-        # For each file:
-        #   1. Read the full text
-        #   2. Use regex to split YAML frontmatter from body
-        #      Pattern: ^---\n(.*?)\n---\n(.*)
-        #      Use re.match() with re.DOTALL flag so . matches newlines
-        #   3. Parse YAML lines into a dict (each line is "key: value")
-        #   4. Store in self.skills[name] = {"meta": meta, "body": body}
-        #      name comes from meta.get("name", directory_name)
-        for f in sorted(skills_dir.rglob("SKILL.md")):
-            text = f.read_text()
-            # TODO: regex split
-            match = re.match(r"___", text, re.DOTALL)
-            meta, body = {}, text
-            if match:
-                # TODO: parse YAML
-                yaml_text = match.group(1).strip()
-                body = match.group(2).strip()
-                for line in yaml_text.splitlines():
-                    if ":" in line:
-                        k, v = line.split(":", 1)
-                        meta[k.strip()] = v.strip()
-
-                name = meta.get("name", f.parent.name)
-                self.skills[name] = {"meta": meta, "body": body}
-
-        print(f"[Loaded {len(self.skills)} skills: {', '.join(self.skills.keys())}]")
+        self.skills = {}
+        # TODO: 扫描 skills_dir, 解析 SKILL.md, 构建 self.skills 字典
+        # 参考讲义 5.1 节
 
     def descriptions(self) -> str:
-        """Return a summary of available skills for the system prompt."""
-        if not self.skills:
-            return "(no skills available)"
-        # TODO: Build a string listing each skill's name and description
-        # Format: one line per skill: " - {name}: {description}"
-        # Hint: use meta.get("description", "(no description)")
+        # TODO: 返回 " - name: description\n" 格式的字符串
         pass
 
     def load(self, name: str) -> str:
-        """Load a skill by name. Return body text or error message."""
-        # TODO: Look up skill by name in self.skills
-        # If found: return the body text
-        # If not found: return an error listing available skills
-        # Hint: ", ".join(self.skills.keys()) gives the available names
+        # TODO: 按名字查找, 返回 body 文本或错误信息
         pass
-
 
 # ============================================================================
 # TODO 2: Initialize Skills and update SYSTEM_PROMPT
@@ -457,19 +403,11 @@ def main():
     store = SessionStore(session_dir)
 
     print("\n=== Claw0 Agent (s05 - Skills) ===")
-    print("Commands:")
-    print("  /sessions - List all sessions")
-    print("  /new      - Start a new session")
-    print("  /delete <key> - Delete a session")
-    print("  /skills   - List available skills")
-    print("  quit      - Exit\n")
+    print("Commands: /sessions, /new, /delete, /skills, quit\n")
 
     session_key = "default"
     messages = store.load_session(session_key)
-    if messages:
-        print(f"[Loaded session '{session_key}' with {len(messages)} messages]\n")
-    else:
-        print(f"[Started new session '{session_key}']\n")
+    print(f"[{'Loaded' if messages else 'Started new'} session '{session_key}']\n")
 
     while True:
         try:
@@ -477,8 +415,7 @@ def main():
             if not user_input:
                 continue
             if user_input.lower() in ("quit", "q", "exit"):
-                print("Goodbye!")
-                return
+                print("Goodbye!"); return
             if user_input.lower() == "/sessions":
                 for s in store.list_sessions():
                     print(f"  {s['key']}  {s['modified']}  {s['size']} bytes")
@@ -486,8 +423,7 @@ def main():
             if user_input.lower().startswith("/delete"):
                 parts = user_input.split()
                 if len(parts) < 2:
-                    print("Usage: /delete <session_key>")
-                    continue
+                    print("Usage: /delete <session_key>"); continue
                 store.delete_session(parts[1])
                 print(f"[Deleted session '{parts[1]}']")
                 continue
@@ -497,7 +433,6 @@ def main():
                 print(f"[Started new session '{session_key}']")
                 continue
             if user_input.lower() == "/skills":
-                print("Available skills:")
                 for name, skill in SKILLS.skills.items():
                     desc = skill["meta"].get("description", "(no description)")
                     print(f"  - {name}: {desc}")
@@ -507,52 +442,39 @@ def main():
             store.save_message(session_key, "user", user_input)
 
             rounds_since_todo = 0
-
             while True:
                 response = client.messages.create(
-                    model=MODEL,
-                    max_tokens=4096,
-                    system=SYSTEM_PROMPT,
-                    messages=messages,
-                    tools=TOOLS
+                    model=MODEL, max_tokens=4096, system=SYSTEM_PROMPT,
+                    messages=messages, tools=TOOLS
                 )
                 messages.append({"role": "assistant", "content": response.content})
                 store.save_message(session_key, "assistant", response.content)
 
                 tool_use_blocks = [b for b in response.content if b.type == "tool_use"]
                 if tool_use_blocks:
-                    results = []
-                    todo_called = False
+                    results, todo_called = [], False
                     for block in tool_use_blocks:
-                        print(f"\n[Tool: {block.name}]")
-                        print(f"  Input: {json.dumps(block.input, indent=2)}")
+                        print(f"\n[Tool: {block.name}] Input: {json.dumps(block.input, indent=2)}")
                         tool_result = process_tool_call(block.name, block.input)
-                        preview = tool_result[:200] if len(tool_result) > 200 else tool_result
-                        print(f"  Result: {preview}")
+                        print(f"  Result: {tool_result[:200]}")
                         results.append({"type": "tool_result", "tool_use_id": block.id, "content": tool_result})
                         store.save_message(session_key, "tool_result", tool_result, block.id)
                         if block.name == "todo":
-                            todo_called = True
-                            rounds_since_todo = 0
-
+                            todo_called = True; rounds_since_todo = 0
                     if not todo_called:
                         rounds_since_todo += 1
                     if rounds_since_todo >= 3:
                         results.insert(0, {"type": "text", "text": "Update your todos."})
-
                     messages.append({"role": "user", "content": results})
                     continue
                 else:
                     text = "\n".join(b.text for b in response.content if b.type == "text")
                     print(f"\nAgent > {text}\n")
                     break
-
         except KeyboardInterrupt:
-            print("\n\nInterrupted. Goodbye!")
-            break
+            print("\n\nInterrupted."); break
         except Exception as e:
             print(f"\n[Error: {e}]\n")
-
 
 if __name__ == "__main__":
     main()

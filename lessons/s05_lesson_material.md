@@ -153,22 +153,103 @@ Use load_skill to get detailed instructions.
 
 ---
 
-## 5. 你需要实现的部分
+## 5. 实现指南（详细步骤 + 参考代码）
 
-`s05_skills.py` 基于 s04 的代码，新增 2 个 TODO 区域：
+`s05_skills.py` 基于 s04 的代码，新增 3 个 TODO 区域。以下是每个 TODO 的详细实现指引。
 
-### TODO 1: SkillLoader 类
+### TODO 1: load_skill 工具定义
 
-需要实现：
-1. `__init__()`：扫描 `skills_dir` 下所有 `SKILL.md`，用正则解析 YAML frontmatter，构建 `self.skills` 字典
-2. `descriptions()`：返回可用技能的列表，用于系统 prompt
-3. `load(name)`：按名字查找并返回 body 文本，找不到时返回错误信息
+在 `TOOLS` 列表末尾添加新工具：
 
-### TODO 2: load_skill 工具
+```python
+{
+    "name": "load_skill",
+    "description": "Load a skill file to get specialized instructions.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "name": {"type": "string", "description": "The skill name."}
+        },
+        "required": ["name"]
+    }
+}
+```
 
-1. 在 `TOOLS` 中添加 `load_skill` 工具定义
-2. 在 `TOOL_DICT` 中注册 handler
-3. 更新 `SYSTEM_PROMPT`，加入技能列表
+### TODO 2: 注册 load_skill handler
+
+在 `TOOL_DICT` 中添加一行：
+
+```python
+"load_skill": lambda **kw: SKILLS.load(kw["name"]),
+```
+
+### TODO 3: SkillLoader 类
+
+#### 3.1 `__init__()` — 扫描 + 解析
+
+```python
+def __init__(self, skills_dir: Path):
+    self.skills = {}
+    if not skills_dir.exists():
+        return
+
+    for f in sorted(skills_dir.rglob("SKILL.md")):
+        text = f.read_text()
+        # 正则分隔 YAML frontmatter 和 body
+        match = re.match(r"^---\n(.*?)\n---\n(.*)", text, re.DOTALL)
+        meta, body = {}, text
+        if match:
+            for line in match.group(1).strip().splitlines():
+                if ":" in line:
+                    k, v = line.split(":", 1)
+                    meta[k.strip()] = v.strip()
+            body = match.group(2).strip()
+
+        name = meta.get("name", f.parent.name)
+        self.skills[name] = {"meta": meta, "body": body}
+```
+
+正则 `^---\n(.*?)\n---\n(.*)` 说明：
+- `^---\n` — 文件开头的第一行 `---`
+- `(.*?)` — 非贪婪匹配，捕获 YAML 部分（group 1）
+- `\n---\n` — 分隔线
+- `(.*)` — 剩余全部内容（group 2，body）
+- `re.DOTALL` — 让 `.` 匹配换行符
+
+#### 3.2 `descriptions()` — 返回技能摘要
+
+```python
+def descriptions(self) -> str:
+    if not self.skills:
+        return "(no skills available)"
+    lines = []
+    for name, skill in self.skills.items():
+        desc = skill["meta"].get("description", "(no description)")
+        lines.append(f" - {name}: {desc}")
+    return "\n".join(lines)
+```
+
+#### 3.3 `load()` — 按名查找
+
+```python
+def load(self, name: str) -> str:
+    skill = self.skills.get(name)
+    if not skill:
+        available = ", ".join(self.skills.keys())
+        return f"Error: Unknown skill '{name}'. Available: {available}"
+    return skill["body"]
+```
+
+### TODO 4: SYSTEM_PROMPT 追加技能列表
+
+```python
+SYSTEM_PROMPT = (
+    "You are a coding agent. "
+    "When doing research, ALWAYS use the 'task' tool. "
+    f"Skills available: {SKILLS.descriptions()} "
+    "Use load_skill(name) to get detailed instructions."
+)
+```
 
 ---
 
