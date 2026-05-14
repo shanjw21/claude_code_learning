@@ -145,7 +145,7 @@ TOOLS = [
     #   - "agent_type" (string, optional): "Explore" (read-only) or "general-purpose" (full access)
     {
         "name": "task",
-        "description": "___DESCRIBE_WHEN_THE_LLM_SHOULD_USE_THIS___",
+        "description": "Delegate a focused, self-contained task to a subagent with fresh context. Use this when: (1) the task is a research/exploration task (finding files, grepping, reading multiple files), (2) the task would require many sequential tool calls, or (3) you want to avoid polluting the main conversation context. Do NOT use this for single-step tasks you can do directly. Always prefer 'task' over doing multi-step research yourself.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -153,13 +153,25 @@ TOOLS = [
                 "agent_type": {
                     "type": "string",
                     # TODO: What are the valid agent_type values?
-                    "enum": ["___", "___"],
-                    "description": "___WHAT_DOES_EACH_TYPE_MEAN___"
+                    "enum": ["explore", "general-purpose"],
+                    "description": "explore = read-only (bash + read_file).general-purpose = full access to tools(bash + read_file + write_file + edit_file)"
                 }
             },
-            "required": ["___"]
+            "required": ["prompt"]
         }
     }
+]
+
+# Index by name for subagent tool subset selection
+TOOLS_BY_NAME = {t["name"]: t for t in TOOLS}
+
+# Subagent tool subsets
+EXPLORE_TOOLS = [TOOLS_BY_NAME["bash"], TOOLS_BY_NAME["read_file"]]
+GENERAL_TOOLS = [
+    TOOLS_BY_NAME["bash"],
+    TOOLS_BY_NAME["read_file"],
+    TOOLS_BY_NAME["write_file"],
+    TOOLS_BY_NAME["edit_file"],
 ]
 
 
@@ -359,7 +371,7 @@ TOOL_DICT = {
     "edit_file": tool_edit_file,
     "todo": todo_tool,
     # TODO: Register the "task" handler here
-    # "task": lambda **kw: run_subagent(kw["prompt"], kw.get("agent_type", "___")),
+    "task": lambda **kw: run_subagent(kw["prompt"], kw.get("agent_type", "explore")),
 }
 
 
@@ -375,7 +387,7 @@ def process_tool_call(tool_name: str, tool_input: dict) -> str:
 # TODO 2: run_subagent() -- The Core of s04
 # ============================================================================
 
-def run_subagent(prompt: str, agent_type: str = "Explore") -> str:
+def run_subagent(prompt: str, agent_type: str = "explore") -> str:
     """
     Spawn a temporary agent with FRESH context.
     Returns a text summary of what it found.
@@ -386,28 +398,27 @@ def run_subagent(prompt: str, agent_type: str = "Explore") -> str:
     # TODO: Define subagent tools based on agent_type
     # Explore mode: only bash + read_file (read-only exploration)
     # general-purpose: bash + read_file + write_file + edit_file
-    if agent_type == "Explore":
-        sub_tools = [
-            # TODO: Add bash + read_file tool definitions
-            # Hint: copy from TOOLS above, just the ones you need
-        ]
+    if agent_type == "explore":
+        sub_tools = EXPLORE_TOOLS
     else:
-        sub_tools = [
-            # TODO: Add bash + read_file + write_file + edit_file
-        ]
+        sub_tools = GENERAL_TOOLS
 
     # TODO: Define subagent tool handlers
+    # Note: handlers must match sub_tools. Explore mode only has read access.
     sub_handlers = {
-        # "bash": tool_bash,
-        # "read_file": tool_read_file,
-        # "write_file": tool_write_file,  # only if not Explore
-        # "edit_file": tool_edit_file,     # only if not Explore
+        "bash": tool_bash,
+        "read_file": tool_read_file,
     }
+    if agent_type != "explore":
+        sub_handlers["write_file"] = tool_write_file
+        sub_handlers["edit_file"] = tool_edit_file
 
     # TODO: Create FRESH messages array -- this is the core idea of s04!
     sub_messages = [
-        # TODO: What goes here? Just the user prompt.
-        # The whole point is: subagent starts with ZERO parent context.
+        {
+            "role":"user",
+            "content":prompt
+        }
     ]
 
     MAX_ROUNDS = 30  # TODO: Why 30? What happens if this is too high?
@@ -450,13 +461,24 @@ def run_subagent(prompt: str, agent_type: str = "Explore") -> str:
     # TODO: Extract final text from the last response
     # The LLM's last message might have text blocks -- join them all
     if resp:
-        return "___"  # TODO: join all .text blocks from resp.content
+        text_blocks = [b.text for b in resp.content if b.type == "text"]
+        return "\n".join(text_blocks)  # TODO: join all .text blocks from resp.content
     return "(subagent produced no output)"
 
 
 # ============================================================================
 # TODO 3: Main Loop (from s03, plus subagent support)
 # ============================================================================
+
+SYSTEM_PROMPT = (
+    "You are a helpful assistant with access to tools. "
+    "IMPORTANT: When you need to do research (find files, grep patterns, read multiple files, "
+    "explore code structure), ALWAYS use the 'task' tool to delegate to a subagent. "
+    "Do NOT use bash/read_file/edit_file directly for research tasks. "
+    "Only use direct tools for single-step actions (write a file, edit one file, check one thing). "
+    "The 'task' tool gives the subagent fresh context and keeps this conversation clean."
+)
+
 
 def main():
     session_dir = os.path.join(os.path.dirname(__file__), "sessions_store")
@@ -515,6 +537,7 @@ def main():
                 response = client.messages.create(
                     model=MODEL,
                     max_tokens=4096,
+                    system=SYSTEM_PROMPT,
                     messages=messages,
                     tools=TOOLS
                 )
